@@ -24,7 +24,7 @@ select,button{font-size:15px;padding:8px 12px;border-radius:6px}button{backgroun
 <div class="step"><b>2. Escolha as abas que serão transformadas</b><div id="acoes"><button type="button" id="marcar">Marcar todas compatíveis</button><button type="button" id="limpar">Limpar</button><span id="qtd"></span></div><div id="lista"><span style="color:#888;font-size:13px">Anexe um arquivo para listar as abas.</span></div><div id="padrao"></div><div id="nomes"></div></div>
 <div class="step"><b>3. Gerar</b><button id="run" disabled>Gerar Valoracao_TVG e baixar</button></div>
 <div class="step"><b>Resultado</b><div id="log">Aguardando arquivo…</div></div>
-<div class="warn">O arquivo gerado traz <b>somente as abas selecionadas</b> (Distribuição + Valoração); RESUMO e demais abas são removidas. Com <b>uma</b> aba, os nomes são <b>Distribuicao_TVG</b> e <b>Valoracao_TVG</b>; com <b>várias</b>, você define os nomes (sugestão DIST_/VAL_, máx. 31 caracteres). Guias de Valoração em cinza (#A6A6A6) e de Distribuição em cores claras em rodízio (vermelho, amarelo, azul, roxo, laranja). Colunas K a O da Valoração vêm como <b>valores</b> da Distribuição, para não quebrar com permissionamento/links externos. Linhas de 15" e 10" saem agrupadas e ocultas, com o Desconto seguindo a linha de 30". Meses zerados em todas as linhas saem recolhidos. O Coef. das linhas de 15"/10" é preenchido automaticamente pela lista Precos Globo_2026_11; a Qtde continua manual. A célula do Coef. fica laranja (#FFC000, negrito) quando encontrado e vermelha (#FF0000) quando não preenchido. Linhas sem audiência agregada contam como 0 (sem #VALOR!). Coeficientes de audiência em %. Inclui checagem MO (linha 50 em branco para preencher) e a tabela SALDO DE CONVERSÃO - COMERCIAIS. Linhas de seção (delimitadores) saem em cinza escuro, sem fórmulas de cálculo.</div>
+<div class="warn">O arquivo gerado traz <b>somente as abas selecionadas</b> (Distribuição + Valoração); RESUMO e demais abas são removidas. Com <b>uma</b> aba, os nomes são <b>Distribuicao_TVG</b> e <b>Valoracao_TVG</b>; com <b>várias</b>, você define os nomes (sugestão DIST_/VAL_, máx. 31 caracteres). Guias de Valoração em cinza (#A6A6A6) e de Distribuição em cores claras em rodízio (vermelho, amarelo, azul, roxo, laranja). Os meses são lidos pelo cabeçalho da linha 29 a partir da coluna U (qualquer quantidade; aceita "Jan", "JAN", "ABRIL", "NOV - DEZ", "Jan/27"). Colunas K a O da Valoração vêm como <b>valores</b> da Distribuição, para não quebrar com permissionamento/links externos. Linhas de 15" e 10" saem agrupadas e ocultas, com o Desconto seguindo a linha de 30". Meses zerados em todas as linhas saem recolhidos. O Coef. das linhas de 15"/10" é preenchido automaticamente pela lista Precos Globo_2026_11; a Qtde continua manual. A célula do Coef. fica laranja (#FFC000, negrito) quando encontrado e vermelha (#FF0000) quando não preenchido. Linhas sem audiência agregada contam como 0 (sem #VALOR!). Coeficientes de audiência em %. Inclui checagem MO (linha 50 em branco para preencher) e a tabela SALDO DE CONVERSÃO - COMERCIAIS. Linhas de seção (delimitadores) saem em cinza escuro, sem fórmulas de cálculo.</div>
 </main>
 <script>/*!
 
@@ -61,6 +61,33 @@ const GeradorB = (() => {
     "valor audiencia agregada simulcast": 5, "desconto": 7, "total preco negociado": 8, "negociado aa": 9,
     "liquido negociado": 10, "aa liquido negociado": 11, "incide d&c": 13, "valor d&c": 14 };
   const MESES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+  // reconhece cabeçalhos de mês em vários formatos: "Jan", "JAN", "ABRIL", "Março", "NOV - DEZ", "Jan/27", "Jan 2027"
+  const MESES_FULL = ["janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+  const CONECTORES = new Set(["a", "e", "ate", "de"]);
+  const isMes = h => {
+    const toks = String(h || "").split(/[^a-z0-9]+/).filter(Boolean); let mes = 0;
+    for (const t of toks) {
+      if (/^\d+$/.test(t) || CONECTORES.has(t)) continue;
+      if (t.length >= 3 && MESES_FULL.some(f => f.startsWith(t))) { mes++; continue; }
+      return false;
+    }
+    return mes > 0;
+  };
+  // localiza as colunas de mês entre a coluna U e o 1º cabeçalho de resumo (ex.: "Total inserções");
+  // colunas sem cabeçalho de mês nessa faixa (ex.: mês oculto/apagado) são ignoradas
+  const detectarMeses = (hdr, maxCol) => {
+    let fim = maxCol + 1;
+    for (let c = 21; c <= maxCol; c++) if (RIGHT_CANON[hdr(c)] !== undefined) { fim = c; break; }
+    const meses = []; for (let c = 21; c < fim; c++) if (isMes(hdr(c))) meses.push(c);
+    if (!meses.length) return { cols: [], fim, vazias: [] };
+    // de U até o último mês: colunas sem cabeçalho (ex.: mês oculto/apagado) entram como mês vazio,
+    // preservando a estrutura de fórmulas da base (ex.: SUM(U32:AF32))
+    const ult = meses[meses.length - 1], cols = [], vazias = [];
+    let ok = true;
+    for (let c = 21; c <= ult; c++) { if (isMes(hdr(c))) cols.push(c); else if (!hdr(c)) { cols.push(c); vazias.push(c); } else { ok = false; break; } }
+    if (!ok) return { cols: meses.slice(0, MAX_MESES), fim, vazias: [] };
+    return { cols: cols.slice(0, MAX_MESES), fim, vazias };
+  };
   const LEFT_CHECK = { 8: "tipo formato", 13: "sec.", 14: "preco base", 15: "coef.", 16: "preco unitario", 19: "insercoes por programa" };
   const LEGENDA_EXTRA = { G21: "Cliente", G22: "MO", G23: "GAC", G24: "CS Patrocinio", G25: "CS ML" };
 
@@ -177,21 +204,22 @@ const GeradorB = (() => {
     let maxColA = 1; for (const row of A.rows.values()) for (const c of row.keys()) maxColA = Math.max(maxColA, c);
     const erros = [];
     for (const [c, h] of Object.entries(LEFT_CHECK)) if (hdr(+c) !== h) erros.push(`${L(+c)}${HDR_ROW} deveria ser "${h}" e está "${val(HDR_ROW, +c) ?? "vazio"}"`);
-    let MES_A = null;
-    for (let c = 1; c <= maxColA; c++) if (MESES.includes(hdr(c))) { MES_A = c; break; }
-    if (MES_A === null) erros.push(`nenhum mês encontrado na linha ${HDR_ROW}`);
-    else {
-      if (MES_A !== 21) erros.push(`o primeiro mês deveria estar na coluna U e está na ${L(MES_A)}`);
-    }
+    const DM = detectarMeses(hdr, maxColA), MCOLS = DM.cols, REG_FIM = DM.fim;
+    if (!MCOLS.length) erros.push(`nenhum mês encontrado na linha ${HDR_ROW} a partir da coluna U`);
+    const MES_A = MCOLS[0];
     if (erros.length) throw new Error("A aba base não segue o layout esperado:\n- " + erros.join("\n- "));
     // quantidade de meses = colunas seguidas com nome de mês a partir de U
-    let N_MESES = 0; while (N_MESES < MAX_MESES && MESES.includes(hdr(MES_A + N_MESES))) N_MESES++;
+    const N_MESES = MCOLS.length, lastMesCol = MCOLS[N_MESES - 1];
+    const mIdx = new Map(MCOLS.map((c, i) => [c, i]));
+    // colunas sem cabeçalho dentro da faixa de meses (tratadas como mês vazio) ou fora dela (ignoradas)
+    const ignoradas = DM.vazias.map(c => `${L(c)} (sem cabeçalho – tratada como mês vazio)`);
+    for (let c = 21; c < REG_FIM; c++) if (!mIdx.has(c) && c !== lastMesCol + 1) ignoradas.push(`${L(c)} "${val(HDR_ROW, c) ?? ""}" (ignorada)`);
     const TOTAL_B = BLOCO_B + 4 * N_MESES;   // bloco TOTAL
     const RB0 = TOTAL_B + 5;                 // 1ª coluna de resumo (Total inserções)
     const cF = L(RB0), cG = L(RB0 + 1), cJ = L(RB0 + 4), cK = L(RB0 + 5), cM = L(RB0 + 7), cU = L(RB0 + 15), cV = L(RB0 + 16), cA = L(TOTAL_B);
     const rightMap = {}, mapeadas = [], extras = [], duplicadas = [];
     const FIRST_EXTRA = RB0 + 17; let nextExtra = FIRST_EXTRA;
-    for (let c = MES_A + N_MESES; c <= maxColA; c++) {
+    for (let c = REG_FIM; c <= maxColA; c++) {
       const h = hdr(c); if (!h) continue;
       const alvo = RIGHT_CANON[h] === undefined ? undefined : RB0 + RIGHT_CANON[h];
       if (alvo !== undefined && !Object.values(rightMap).includes(alvo)) { rightMap[c] = alvo; mapeadas.push({ nome: String(val(HDR_ROW, c)).replace(/\s+/g, " ").trim(), base: L(c), destino: L(alvo) }); }
@@ -199,7 +227,15 @@ const GeradorB = (() => {
     }
     const faltando = Object.entries(RIGHT_CANON).filter(([, off]) => !Object.values(rightMap).includes(RB0 + off)).map(([h]) => h);
     const rightCols = Object.keys(rightMap).map(Number);
-    const cmap = c => c <= 19 ? c : c === 20 ? 26 : c < MES_A + N_MESES ? BLOCO_B + 4 * (c - MES_A) : (rightMap[c] ?? (c === MES_A + N_MESES ? TOTAL_B + 4 : null));
+    const cmap = c => {
+      if (c <= 19) return c; if (c === 20) return 26;
+      if (mIdx.has(c)) return BLOCO_B + 4 * mIdx.get(c);
+      if (rightMap[c] !== undefined) return rightMap[c];
+      if (c === lastMesCol + 1 && c < REG_FIM) return TOTAL_B + 4;
+      return null;
+    };
+    const naFaixa = c => c >= 21 && c < REG_FIM;
+    const primeiroMesDesde = c => MCOLS.find(x => x >= c), ultimoMesAte = c => [...MCOLS].reverse().find(x => x <= c);
 
     let total_row = null;
     for (let r = FIRST; r <= maxRow; r++) if (String(val(r, 19) ?? "").trim().toLowerCase() === "total inserções") { total_row = r; break; }
@@ -213,7 +249,6 @@ const GeradorB = (() => {
     const rm = r => rowmap[r] ?? r + shift;
     const lastB = rm(last) + (parents.includes(last) ? FILHAS.length : 0);
     const RANGE_RX = /(?<![A-Za-z0-9_.$])((?:'(?:[^']|'')+'|[A-Za-z_][\w.]*)!)?(\$?)([A-Z]{1,3})(\$?)(\d+):(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\w(!])/g;
-    const lastMesCol = MES_A + N_MESES - 1, fimMeses13 = MES_A + 12;
     const tr = f => f.split(/("(?:[^"]|"")*")/).map((part, i) => {
       if (i % 2) return part;
       const keep = [];
@@ -222,8 +257,11 @@ const GeradorB = (() => {
         if (sh) out = m;                                   // referência a outra aba: não mexe
         else {
           let n1 = cmap(CI(c1)), n2 = cmap(CI(c2));
-          // faixa de meses que ultrapassa o período do projeto: limita ao último mês
-          if (n1 !== null && CI(c1) >= MES_A && CI(c1) <= lastMesCol && CI(c2) > lastMesCol && CI(c2) <= fimMeses13) n2 = cmap(lastMesCol);
+          // faixa dentro da região de meses (ex.: SUM(U32:AF32)): ajusta para o 1º/último mês real
+          if (naFaixa(CI(c1)) && naFaixa(CI(c2))) {
+            const a = primeiroMesDesde(CI(c1)), b = ultimoMesAte(CI(c2));
+            n1 = a !== undefined ? cmap(a) : null; n2 = b !== undefined && a !== undefined && b >= a ? cmap(b) : null;
+          }
           out = (n1 !== null && n2 !== null) ? `${a1}${L(n1)}${a2}${rm(+r1)}:${b1}${L(n2)}${b2}${rm(+r2)}`
                                              : `${S}!${a1}${c1}${a2}${r1}:${b1}${c2}${b2}${r2}`;
         }
@@ -236,7 +274,7 @@ const GeradorB = (() => {
     // meses com inserção (soma das linhas de item na base)
     const mesAtivo = [];
     for (let m = 0; m < N_MESES; m++) { let s = 0;
-      for (let r = FIRST; r <= last; r++) { const v = parseFloat(get(r, MES_A + m)?.v); if (!isNaN(v) && v !== 0) s++; }
+      for (let r = FIRST; r <= last; r++) { const v = parseFloat(get(r, MCOLS[m])?.v); if (!isNaN(v) && v !== 0) s++; }
       mesAtivo.push(s > 0); }
 
     const B = new Map();
@@ -309,7 +347,7 @@ const GeradorB = (() => {
       else if (r !== FIRST) secRows.add(rb);
       if (!isItem) continue;
       const filhos = parents.includes(r) ? FILHAS.map((_, i) => rb + 1 + i) : [];
-      blocos(rb, (m, q) => `${S}!${L(MES_A + m)}${r}` + filhos.map(fr => `-${q}${fr}`).join(""));
+      blocos(rb, (m, q) => `${S}!${L(MCOLS[m])}${r}` + filhos.map(fr => `-${q}${fr}`).join(""));
       FILHAS.forEach(([sec, suf, role], i) => {
         const fr = filhos[i]; if (!fr) return; papel[fr] = KIT.roles[role]; filhosB.push(fr);
         [7, 10, 11, 12, 14, 17, 19].forEach(c => setF(fr, c, `${L(c)}${rb}`));
@@ -473,9 +511,9 @@ const GeradorB = (() => {
     zip.file("xl/workbook.xml", wb2);
     const ct = await zip.file("[Content_Types].xml").async("string");
     zip.file("[Content_Types].xml", ct.replace("</Types>", `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`));
-    const nomesMes = Array.from({ length: N_MESES }, (_, m) => String(val(HDR_ROW, MES_A + m)).trim());
+    const nomesMes = Array.from({ length: N_MESES }, (_, m) => (String(val(HDR_ROW, MCOLS[m]) ?? "").replace(/\s+/g, " ").trim() || `(${L(MCOLS[m])} sem nome)`));
     return { parents: parents.map(r => `linha ${r}: ${val(r, 7) ?? ""} | ${val(r, 9) ?? ""}`),
-             auxInicio: parents.length ? T0 : null, auxLinhas, checagem: `${L(TOTAL_B + 1)}${ckR}:${L(TOTAL_B + 3)}${ckR + 2}`, mesesOcultos: nomesMes.filter((_, m) => !mesAtivo[m]), nMeses: N_MESES, periodo: nomesMes, mapeadas, extras, faltando, duplicadas };
+             auxInicio: parents.length ? T0 : null, auxLinhas, checagem: `${L(TOTAL_B + 1)}${ckR}:${L(TOTAL_B + 3)}${ckR + 2}`, mesesOcultos: nomesMes.filter((_, m) => !mesAtivo[m]), nMeses: N_MESES, periodo: nomesMes, colunasMes: `${L(MCOLS[0])}:${L(lastMesCol)}`, ignoradas, mapeadas, extras, faltando, duplicadas };
   }
   async function listarAbas(zip) {
     const wbXml = await zip.file("xl/workbook.xml").async("string");
@@ -499,7 +537,8 @@ const GeradorB = (() => {
         const A = parseSheet(await f.async("string"), sst);
         const txt = c => { const x = (A.rows.get(HDR_ROW) || new Map()).get(c); if (!x) return ""; return norm(x.text !== undefined ? x.text : (x.v ?? "")); };
         const falhas = Object.entries(LEFT_CHECK).filter(([c, h]) => txt(+c) !== h).length;
-        let n = 0; while (n < MAX_MESES && MESES.includes(txt(21 + n))) n++;
+        let maxC = 1; for (const row of A.rows.values()) for (const c of row.keys()) maxC = Math.max(maxC, c);
+        const dm = detectarMeses(txt, maxC), n = dm.cols.length - dm.vazias.length;
         info.meses = n;
         if (!falhas && n) info.ok = true;
         else info.motivo = n ? "cabeçalho fora do layout PTE" : "fora do layout PTE de TV";
@@ -659,7 +698,7 @@ function validar(){const sel=selecionadas(),err=[];const p=planos();
  if($('nerr'))$('nerr').innerHTML=err.length?'⚠ '+err.map(escH).join('<br>⚠ '):'';
  if(sel.length===1)$('padrao').innerHTML='Uma aba selecionada: mantida a nomenclatura padrão — '+bolinha(CORES_DIST[0])+'<b>Distribuicao_TVG</b> e '+bolinha(COR_VAL)+'<b>Valoracao_TVG</b>.';
  $('run').disabled=!sel.length||err.length>0;$('run').textContent=sel.length>1?`Gerar ${sel.length} valorações e baixar`:'Gerar Valoracao_TVG e baixar';return!err.length;}
-const resumo=(p,res)=>'▶ '+p.base+' → '+p.dist+'  |  nova aba: '+p.val+'\nPeríodo lido: '+res.nMeses+' mês(es) ('+res.periodo.join(', ')+')'+'\nLinhas COMERCIAL 30" com filhas 15"/10": '+res.parents.length+(res.parents.length?'\n  '+res.parents.join('\n  '):'')+
+const resumo=(p,res)=>'▶ '+p.base+' → '+p.dist+'  |  nova aba: '+p.val+'\nPeríodo lido: '+res.nMeses+' mês(es) – colunas '+res.colunasMes+' ('+res.periodo.join(', ')+')'+(res.ignoradas.length?'\n  Obs.: '+res.ignoradas.join('; '):'')+'\nLinhas COMERCIAL 30" com filhas 15"/10": '+res.parents.length+(res.parents.length?'\n  '+res.parents.join('\n  '):'')+
  (res.auxInicio?'\nSaldo de Conversão - Comerciais: linha '+res.auxInicio+' ('+res.auxLinhas+' linha(s) de 30")':'')+'\nChecagem MO: '+res.checagem+'\nMeses recolhidos (zerados em todas as linhas): '+(res.mesesOcultos.join(', ')||'nenhum')+
  '\nColunas lidas pelo cabeçalho (base → valoração):\n  '+res.mapeadas.map(m=>m.nome+': '+m.base+' → '+m.destino).join('\n  ')+(res.faltando.length?'\n⚠ Não encontradas na base: '+res.faltando.join(', '):'')+(res.extras.length?'\n⚠ Colunas sem correspondência (copiadas no fim): '+res.extras.join('; '):'')+(res.duplicadas.length?'\n⚠ Cabeçalhos repetidos: '+res.duplicadas.join('; '):'');
 $('run').onclick=async()=>{if(!validar())return;$('run').disabled=true;const p=planos();const partes=[];
